@@ -18,3 +18,7 @@ $ python main.py
 - `resistant.npy`: cancer cell lines and drug resistance.
 - `sensitive.npy`: cancer cell lines and drug sensitivity.
 - `pic.npy`: cell line morphological picture features
+- `cnv.npy`: cell line copy number variationn features
+- `tpm.npy`: cell line gene expression features
+- `drug_fea.npy`: drug feature matrix
+- `dict.npy`: drug adjacency matrix 
