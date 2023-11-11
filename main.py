@@ -1,31 +1,30 @@
 import argparse
 import numpy as np
 import random
-
-import pandas as pd
-from sklearn.model_selection import StratifiedKFold
-from model import Drugcell
+from model1 import Drugcell
 import torch
 import torch.nn as nn
-from sklearn.metrics import roc_auc_score
+from sklearn.model_selection import StratifiedKFold
+from sklearn.metrics import roc_auc_score, precision_recall_curve
 from sklearn.metrics import auc as auc3
-from sklearn.metrics import precision_recall_curve
-import scipy.sparse as sp
 import os
+import sklearn
+from sklearn.preprocessing import MinMaxScaler
+import pandas as pd
 
 
-device = torch.device("cpu" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('--epoch', type=int, default=600,
+    parser.add_argument('--epoch', type=int, default=2000,
                         help='Training Epochs')
     parser.add_argument('--node_dim', type=int, default=36,
                         help='Node dimension')
-    parser.add_argument('--lr', type=float, default=0.0002)
-    parser.add_argument('--weight_decay', type=float, default=2e-5,
-                        help='l2 reg')
+    parser.add_argument('--lr', type=float, default=0.008)  # 学习率
+    parser.add_argument('--weight_decay', type=float, default=1e-7,
+                        help='l2 reg')  # 权重衰减参数
 
 
     def seed_torch(seed=42):
@@ -40,6 +39,7 @@ if __name__ == '__main__':
         torch.backends.cudnn.enabled = False
     seed_torch()
 
+
     args = parser.parse_args()
     print('args:', args)
     epochs = args.epoch
@@ -48,57 +48,43 @@ if __name__ == '__main__':
     weight_decay = args.weight_decay
 
 
-    rna_seq = np.load('tpm.npy', allow_pickle=True).astype(float).T
-    c = np.array(np.where(np.isnan(rna_seq))).T
-    c = c[:, 1]
-    rna_list = list(range(0, rna_seq.shape[1]))
-    not_in = set(c)
-    kk = [item for item in rna_list if item not in not_in]
-    rna_seq = rna_seq[:, kk]
+    rna_seq = np.load('tpm.npy', allow_pickle=True).astype(float)
+    rna_seq = sklearn.preprocessing.scale(rna_seq, with_mean=True, with_std=True,axis=0)
+
+
+
     rna_seq = torch.as_tensor(rna_seq, dtype=torch.float32).to(device)
-    print(rna_seq.shape)
 
 
 
-    gene_cnv = np.load('cnv.npy',allow_pickle=True).astype(float).T
-    c = np.array(np.where(np.isnan(gene_cnv))).T
-    c = c[:,1]
-    cnv_list = list(range(0 , gene_cnv.shape[1]))
-    not_in = set(c)
-    kk = [item for item in cnv_list if item not in not_in]
-    gene_cnv = gene_cnv[:, kk]
-
+    gene_cnv = np.load('cnv.npy',allow_pickle=True).astype(float)
     gene_cnv = torch.as_tensor(gene_cnv, dtype=torch.float32).to(device)
-    print(gene_cnv.shape)
 
 
 
-    pic_dim = np.load('pil.npy', allow_pickle=True)
+
+    pic_dim = np.load('11.npy', allow_pickle=True) #list   259   3x224x224
     A = np.stack(pic_dim, axis=0)
     pic_dim = torch.as_tensor(A, dtype=torch.float32).to(device)
 
 
-
-
-    sensitive = np.load('sensitive.npy', allow_pickle=True)
-    resistant = np.load('resistant.npy', allow_pickle=True)
-    ll = np.array(list(range(0,resistant.shape[0])))
-    np.random.shuffle(ll)
-    resistant = resistant[ll[0:sensitive.shape[0]],:]
-
+    sensitive = np.load('sensi.npy', allow_pickle=True)
+    resistant = np.load('resis.npy', allow_pickle=True)
+    sensitive = sensitive[0:13000,:]
     drugcell = np.vstack((resistant, sensitive)).astype(int)
-    y = drugcell[:, 2]
+
+    y = drugcell[:, 2]  # 规定测试标签
 
 
+    # drug fea,adj
     drug_fea = np.load('drug_fea.npy', allow_pickle=True)
     for i in range(len(drug_fea)):
         drug_fea[i] = torch.as_tensor(drug_fea[i])
         drug_fea[i] = drug_fea[i].to(device)
 
 
-
-
     drug_adj = np.load('dict.npy', allow_pickle=True)
+
     drug_adj = drug_adj.item()
 
     for key, value in drug_adj.items():
@@ -116,7 +102,7 @@ if __name__ == '__main__':
     fold_aupr = 0
     fold_auc = 0
     fold_index = 1
-    logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.05)).to(device)
+    logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.01)).to(device)
 
     for train1, test1 in fold.split(drugcell, y):
 
@@ -128,14 +114,10 @@ if __name__ == '__main__':
 
         train_index = torch.from_numpy(train_index).to(device)
         test_index = torch.from_numpy(test_index).to(device)
-        print(test_index)
-        df1 = pd.DataFrame(test_index)
-        df1.to_csv('example.csv', mode='a', index=False)
+
         model = Drugcell(
                   num_tpm = rna_seq.shape[1],
-
                   num_genecnv = gene_cnv.shape[1],
-           #       num_pic = pic_fea.shape[1],
                   node_dim = node_dim,
                   drug_feat = 75
                     ).to(device)
@@ -150,8 +132,8 @@ if __name__ == '__main__':
             model.train()
             optimizer.zero_grad()
 
-            loss1,  total_loss2, y, target,_ = model(pic_dim, rna_seq,  gene_cnv,  drug_fea, drug_adj, train_index, train_target, logit_scale)
-            loss = 0.8 * loss1 + 0.2 * total_loss2 # + 0.15 * total_loss1
+            loss1,   total_loss2, y, target = model(pic_dim, rna_seq,  gene_cnv,  drug_fea, drug_adj, train_index, train_target, logit_scale)
+            loss = 0.6*loss1 + 0.4*total_loss2
             loss.backward()
             optimizer.step()
             acc = (y.argmax(dim=1) == target).sum().type(torch.float) / y.shape[0]
@@ -160,8 +142,7 @@ if __name__ == '__main__':
             aupr = auc3(recall, precision)
             print("Train set results:",
                   "loss1={: .4f}".format(loss1.detach().cpu().numpy()),
-             #      "loss2={: .4f}".format(0.15 *total_loss1.detach().cpu().numpy()),
-                  "loss3={: .4f}".format(0.15 *total_loss2.detach().cpu().numpy()),
+                  "loss3={: .4f}".format(total_loss2.detach().cpu().numpy()),
                   "loss_train= {:.4f}".format(loss.detach().cpu().numpy()),
                   "train_auc= {:.4f}".format(auc.item()),
                   "train_aupr= {:.4f}".format(aupr.item()),
@@ -170,8 +151,8 @@ if __name__ == '__main__':
             model.eval()
             with torch.no_grad():
                 '''重写model.forward'''
-                loss1,  total_loss2, y, target,cell_fea = model.forward(pic_dim, rna_seq,  gene_cnv, drug_fea, drug_adj, test_index, test_target, logit_scale)
-                test_loss = 0.8 * loss1 +  0.2 * total_loss2 #  + 0.15 * total_loss1
+                loss1,  total_loss2, y, target = model.forward(pic_dim, rna_seq,  gene_cnv, drug_fea, drug_adj, test_index, test_target, logit_scale)
+                test_loss =  0.6*loss1 + 0.4*total_loss2
                 acc = (y.argmax(dim=1) == target).sum().type(torch.float) / y.shape[0]
                 y_pro = y[:, 1]
                 auc = roc_auc_score(target.detach().cpu().numpy(), y[:, 1].detach().cpu().numpy())
@@ -179,8 +160,7 @@ if __name__ == '__main__':
                 aupr = auc3(recall, precision)
                 print("Test set results:",
                       "loss1={: .4f}".format(loss1.detach().cpu().numpy()),
-                  #    "loss2={: .4f}".format(0.15 *total_loss1.detach().cpu().numpy()),
-                      "loss3={: .4f}".format(0.15 *total_loss2.detach().cpu().numpy()),
+                      "loss3={: .4f}".format(total_loss2.detach().cpu().numpy()),
                       "loss_test={:.4f}".format(test_loss.detach().cpu().numpy()),
                       "test_auc= {:.4f}".format(auc.item()),
                       "test_aupr= {:.4f}".format(aupr.item()),
@@ -190,6 +170,7 @@ if __name__ == '__main__':
                     best_aupr = aupr
                     best_auc = auc
                     best_acc = acc
+                    best_pre = y
 
         fold_acc = fold_acc + best_acc
         fold_auc = fold_auc + best_auc
